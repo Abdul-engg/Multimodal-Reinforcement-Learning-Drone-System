@@ -1,0 +1,262 @@
+import tkinter as tk
+import heapq, random, collections
+
+ROWS, COLS = 10, 20
+CELL_SIZE = 60
+ACTIONS = [(1,0),(-1,0),(0,1),(0,-1)]
+DELAY = 300  # milliseconds per step
+
+ROBOT_COLORS = ["red","blue","green","purple","orange","brown"]
+PATH_COLORS = ["pink","cyan","violet","gold","turquoise","magenta"]
+
+class Cell:
+    def __init__(self):
+        self.blocked = False
+        self.type = None
+
+class Robot:
+    def __init__(self, name, start, goal, path, color, path_color, algo="Dijkstra"):
+        self.name = name
+        self.start = start
+        self.goal = goal
+        self.path = path[:] if path else [start]
+        self.color = color
+        self.path_color = path_color
+        self.current_step = 0
+        self.algo = algo
+        self.reroute_count = 0
+
+    def get_current(self):
+        return self.path[self.current_step]
+
+    def get_next(self):
+        if self.current_step+1 < len(self.path):
+            return self.path[self.current_step+1]
+        return None
+
+    def move(self):
+        if self.get_next():
+            self.current_step += 1
+
+    def replan(self, app, exclude_cells):
+        cur = self.get_current()
+        if self.algo == "BFS":
+            new_path = app.bfs(cur, self.goal, exclude=exclude_cells)
+        elif self.algo == "Dijkstra":
+            new_path = app.dijkstra(cur, self.goal, exclude=exclude_cells)
+        elif self.algo == "Q-learning":
+            new_path = app.q_learning(cur, self.goal, exclude=exclude_cells)
+        else:  # Improved Q-learning
+            new_path = app.reinforcement_learning(cur, self.goal, exclude=exclude_cells)
+
+        if new_path and new_path[0]==cur:
+            self.path = new_path
+            self.current_step = 0
+            self.reroute_count += 1
+        elif new_path and new_path[0]!=cur:
+            self.path = [cur]+new_path
+            self.current_step = 0
+            self.reroute_count +=1
+
+class App:
+    def __init__(self, root):
+        self.root = root
+        self.canvas = tk.Canvas(root, width=COLS*CELL_SIZE, height=ROWS*CELL_SIZE, bg="white")
+        self.canvas.grid(row=0, column=0, columnspan=6)
+
+        tk.Button(root, text="Set Start", command=lambda:self.set_mode("start")).grid(row=1,column=0)
+        tk.Button(root, text="Set Goal", command=lambda:self.set_mode("goal")).grid(row=1,column=1)
+        tk.Button(root, text="Obstacles", command=lambda:self.set_mode("obstacle")).grid(row=1,column=2)
+        tk.Button(root, text="Reset", command=self.reset).grid(row=1,column=3)
+
+        self.algo_var = tk.StringVar(value="Dijkstra")
+        tk.OptionMenu(root, self.algo_var, "BFS","Dijkstra","Q-learning","Improved Q-learning").grid(row=1,column=4)
+        tk.Button(root,text="Run", command=self.run).grid(row=1,column=5)
+
+        self.grid = [[Cell() for _ in range(COLS)] for _ in range(ROWS)]
+        self.starts = []
+        self.goals = []
+        self.robots = []
+
+        self.mode = None
+        self.robot_size = CELL_SIZE//2
+
+        self.canvas.bind("<Button-1>", self.on_click)
+        self.draw_grid()
+
+    def set_mode(self, m): self.mode = m
+
+    def reset(self):
+        self.grid = [[Cell() for _ in range(COLS)] for _ in range(ROWS)]
+        self.starts, self.goals, self.robots = [], [], []
+        self.draw_grid()
+
+    def on_click(self, event):
+        r, c = event.y//CELL_SIZE, event.x//CELL_SIZE
+        if not (0<=r<ROWS and 0<=c<COLS): return
+
+        if self.mode=="start":
+            self.starts.append((r,c))
+        elif self.mode=="goal":
+            self.goals.append((r,c))
+        elif self.mode=="obstacle":
+            self.grid[r][c].blocked = True
+            self.grid[r][c].type = random.choice(["rock","tree","fish","coral"])
+        self.draw_grid()
+
+    def draw_grid(self):
+        self.canvas.delete("all")
+        for r in range(ROWS):
+            for c in range(COLS):
+                x1, y1 = c*CELL_SIZE, r*CELL_SIZE
+                x2, y2 = x1+CELL_SIZE, y1+CELL_SIZE
+                fill = "white"
+                if self.grid[r][c].blocked:
+                    t = self.grid[r][c].type
+                    if t=="rock": self.canvas.create_oval(x1+5,y1+5,x2-5,y2-5,fill="gray")
+                    elif t=="tree": 
+                        self.canvas.create_rectangle(x1+CELL_SIZE//3,y2-10,x2-CELL_SIZE//3,y2,fill="brown")
+                        self.canvas.create_oval(x1+5,y1+5,x2-5,y2-10,fill="green")
+                    elif t=="fish":
+                        self.canvas.create_polygon(x1+5,y1+15,x2-5,y1+5,x2-5,y2-5,fill="blue")
+                    elif t=="coral":
+                        self.canvas.create_polygon(x1+15,y1+5,x2-5,y2-5,x1+5,y2-5,fill="red")
+                    else: self.canvas.create_rectangle(x1,y1,x2,y2,fill="gray")
+                else:
+                    self.canvas.create_rectangle(x1,y1,x2,y2,fill=fill,outline="black")
+
+        for r,c in self.starts:
+            self.canvas.create_rectangle(c*CELL_SIZE,r*CELL_SIZE,(c+1)*CELL_SIZE,(r+1)*CELL_SIZE,fill="yellow")
+        for r,c in self.goals:
+            self.canvas.create_rectangle(c*CELL_SIZE,r*CELL_SIZE,(c+1)*CELL_SIZE,(r+1)*CELL_SIZE,fill="red")
+
+        # Draw robots and their dynamic path lines
+        for robot in self.robots:
+            r,c = robot.get_current()
+            # draw path line dynamically
+            for i in range(1, robot.current_step+1):
+                pr,pc = robot.path[i-1]
+                nr,nc = robot.path[i]
+                px,py = pc*CELL_SIZE+CELL_SIZE//2, pr*CELL_SIZE+CELL_SIZE//2
+                cx,cy = nc*CELL_SIZE+CELL_SIZE//2, nr*CELL_SIZE+CELL_SIZE//2
+                self.canvas.create_line(px,py,cx,cy,fill=robot.path_color,width=4)  # thicker and visible
+            # draw robot
+            x1,y1 = c*CELL_SIZE+5, r*CELL_SIZE+5
+            x2,y2 = x1+CELL_SIZE-10, y1+CELL_SIZE-10
+            self.canvas.create_oval(x1,y1,x2,y2,fill=robot.color)
+
+    def in_bounds_free(self,r,c):
+        return 0<=r<ROWS and 0<=c<COLS and not self.grid[r][c].blocked
+
+    # ---- Algorithms ----
+    def bfs(self,start,goal,exclude=set()):
+        q = collections.deque([[start]])
+        visited = set([start])
+        while q:
+            path = q.popleft()
+            r,c = path[-1]
+            if (r,c)==goal: return path
+            for dr,dc in ACTIONS:
+                nr,nc = r+dr,c+dc
+                if self.in_bounds_free(nr,nc) and (nr,nc) not in visited and (nr,nc) not in exclude:
+                    visited.add((nr,nc))
+                    q.append(path+[(nr,nc)])
+        return [start]
+
+    def dijkstra(self,start,goal,exclude=set()):
+        pq = [(0,[start])]
+        visited=set()
+        while pq:
+            cost,path = heapq.heappop(pq)
+            r,c = path[-1]
+            if (r,c)==goal: return path
+            if (r,c) in visited: continue
+            visited.add((r,c))
+            for dr,dc in ACTIONS:
+                nr,nc = r+dr,c+dc
+                if self.in_bounds_free(nr,nc) and (nr,nc) not in exclude:
+                    heapq.heappush(pq,(cost+1,path+[(nr,nc)]))
+        return [start]
+
+    def q_learning(self,start,goal,exclude=set()):
+        # Q-learning placeholder using BFS with excludes
+        return self.bfs(start,goal,exclude=exclude)
+
+    def reinforcement_learning(self,start,goal,exclude=set()):
+        # Improved Q-learning placeholder using Dijkstra with excludes
+        return self.dijkstra(start,goal,exclude=exclude)
+
+    # ---- Run and Animate ----
+    def run(self):
+        if len(self.starts)!=len(self.goals) or len(self.starts)==0:
+            print("Starts and Goals count mismatch!")
+            return
+        self.robots=[]
+        algo = self.algo_var.get()
+        for i,(s,g) in enumerate(zip(self.starts,self.goals)):
+            if algo=="BFS": path=self.bfs(s,g)
+            elif algo=="Dijkstra": path=self.dijkstra(s,g)
+            elif algo=="Q-learning": path=self.q_learning(s,g)
+            else: path=self.reinforcement_learning(s,g)
+            robot = Robot(f"R{i+1}",s,g,path,ROBOT_COLORS[i%len(ROBOT_COLORS)],PATH_COLORS[i%len(PATH_COLORS)],algo)
+            self.robots.append(robot)
+        self.animate()
+
+    def animate(self):
+        proposals = {}
+        any_can_move=False
+        occupied_now={r.get_current() for r in self.robots}
+        for idx,robot in enumerate(self.robots):
+            nxt=robot.get_next()
+            if nxt:
+                proposals[idx]=(robot.get_current(),nxt)
+                any_can_move=True
+        if not any_can_move:
+            return
+        # check collisions
+        cell_to_bidders={}
+        for idx,(_,nxt) in proposals.items():
+            cell_to_bidders.setdefault(nxt,[]).append(idx)
+        losers=set()
+        winners=set()
+        for nxt_cell,bidders in cell_to_bidders.items():
+            if len(bidders)==1:
+                winners.add(bidders[0])
+            else:
+                bidders.sort()
+                winners.add(bidders[0])
+                for b in bidders[1:]:
+                    losers.add(b)
+        # head-on collisions
+        for i in range(len(self.robots)):
+            for j in range(i+1,len(self.robots)):
+                if i in proposals and j in proposals:
+                    cur_i,nxt_i = proposals[i]
+                    cur_j,nxt_j = proposals[j]
+                    if nxt_i==cur_j and nxt_j==cur_i:
+                        winners.add(min(i,j))
+                        losers.add(max(i,j))
+        # reroute losers
+        for l in losers:
+            robot=self.robots[l]
+            cur=robot.get_current()
+            exclude_cells=occupied_now.union({n for (_,n) in proposals.values()})
+            if cur in exclude_cells: exclude_cells.remove(cur)
+            robot.replan(self,exclude_cells)
+            nxt=robot.get_next()
+            if nxt:
+                proposals[l]=(cur,nxt)
+            else:
+                if l in proposals: del proposals[l]
+        # move winners
+        for idx,(cur,nxt) in list(proposals.items()):
+            robot=self.robots[idx]
+            robot.move()
+        self.draw_grid()
+        self.root.after(DELAY,self.animate)
+
+# Run App
+root=tk.Tk()
+root.title("Multi-Robot Pathfinding with BFS, Dijkstra, Q-learning, Improved Q-learning")
+app=App(root)
+root.mainloop()
